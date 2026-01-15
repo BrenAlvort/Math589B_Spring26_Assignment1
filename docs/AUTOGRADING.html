@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+	"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+
+<head>
+<title>AUTOGRADING.html</title>
+<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>
+
+</head>
+
+<body>
+
+<h1 id="autograding-contract">Autograding contract</h1>
+<p>This document tells you exactly how your code will be invoked by the
+autograder, and what outputs matter.</p>
+<h2 id="what-you-implement">What you implement</h2>
+<p>You will implement BFGS + a line search in:</p>
+<ul>
+<li><code>src/elastic_rod/bfgs.py</code>
+<ul>
+<li><code>backtracking_line_search(...)</code></li>
+<li><code>bfgs(...) -&gt; BFGSResult</code></li>
+</ul></li>
+</ul>
+<p>Everything else is provided.</p>
+<h2 id="how-the-autograder-invokes-your-code">How the autograder invokes
+your code</h2>
+<p>The autograder imports:</p>
+<ul>
+<li><code>elastic_rod.autograde_api.run_suite(mode: str) -&gt; dict</code></li>
+</ul>
+<p>That function internally: 1. builds an initial closed curve
+<code>x0</code> using a fixed <code>(N, seed)</code> 2. calls the
+provided fast C++ kernel through
+<code>RodEnergy.value_and_grad(x)</code> 3. calls <strong>your</strong>
+<code>bfgs(f_and_g, x0, tol=..., max_iter=...)</code> 4. records: -
+<code>f_final</code> (final energy) - <code>gnorm_final</code> (final
+gradient norm) - <code>n_feval</code> (how many times your optimizer
+called <code>f_and_g</code>) - <code>runtime_sec</code> -
+<code>energy_history</code> (so we can verify monotone decrease under
+line search) - a small <code>checksum</code> of the output vector (to
+discourage hard-coded answers)</p>
+<p>You can run the exact same call locally:</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> scripts/autograde_local.py <span class="at">--mode</span> accuracy</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> scripts/autograde_local.py <span class="at">--mode</span> speed</span></code></pre></div>
+<h2 id="what-we-grade">What we grade</h2>
+<h3 id="correctness-accuracy-mode">1) Correctness (accuracy mode)</h3>
+<p>We check that, on two moderate-size cases: - energy decreases
+substantially relative to the initial state - <code>gnorm_final</code>
+is small (or the run is clearly near-stationary) - the energy history is
+sensible (no NaNs/Infs; generally decreasing) - results are reproducible
+for the fixed seed</p>
+<h3 id="efficiency-speed-mode">2) Efficiency (speed mode)</h3>
+<p>On two larger cases we check: - you achieve a target relative energy
+drop within <code>steps</code> - you do not exceed a budget on: -
+<code>runtime_sec</code> (wall-clock time) - <code>n_feval</code>
+(function/gradient evaluations)</p>
+<p><strong>Important:</strong> if your line search is too conservative
+(tiny steps) or too aggressive (many backtracks), it will show up
+here.</p>
+<h2 id="notes">Notes</h2>
+<ul>
+<li>You may not call external optimizers (SciPy, JAX, PyTorch
+optimizers, etc.). Use only NumPy.</li>
+<li>You may add helper functions and extra files, but do not change the
+public API in <code>elastic_rod/autograde_api.py</code>.</li>
+</ul>
+
+</body>
+</html>

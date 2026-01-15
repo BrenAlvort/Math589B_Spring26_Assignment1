@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+	"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+
+<head>
+<title>README.html</title>
+<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>
+
+</head>
+
+<body>
+
+<h1
+id="charged-elastic-rod-dna-supercoiling-bfgs-programming-assignment">Charged
+Elastic Rod (DNA Supercoiling) – BFGS Programming Assignment</h1>
+<p>This repo is a <strong>starter kit</strong> for a Numerical Methods
+programming assignment on <strong>quasi-Newton optimization
+(BFGS)</strong>.</p>
+<p>Students will minimize the energy of a <strong>closed, charged
+elastic filament</strong> in 3D, discretized as <code>N</code> points.
+The energy combines: - <strong>Bending</strong> (curvature penalty), -
+<strong>Stretching</strong> (near-inextensibility), - <strong>Screened
+Coulomb repulsion</strong> (Debye–Hückel).</p>
+<p>The core energy + gradient kernel is implemented in
+<strong>C++</strong> for speed and exposed to Python via
+<strong>ctypes</strong>. You will implement <strong>BFGS</strong> (and a
+line search) in Python and use it to find low-energy configurations.</p>
+<h2 id="quickstart">Quickstart</h2>
+<h3 id="create-environment">1) Create environment</h3>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> <span class="at">-m</span> venv .venv</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="bu">source</span> .venv/bin/activate</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install <span class="at">-r</span> requirements.txt</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install <span class="at">-e</span> .</span></code></pre></div>
+<h3 id="build-the-c-shared-library">2) Build the C++ shared library</h3>
+<p>Linux/macOS (clang/gcc):</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">bash</span> csrc/build.sh</span></code></pre></div>
+<p>This produces <code>csrc/librod.so</code> (Linux) or
+<code>csrc/librod.dylib</code> (macOS).</p>
+<h3 id="run-a-gradient-check">3) Run a gradient check</h3>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pytest</span> <span class="at">-q</span></span></code></pre></div>
+<h3 id="run-the-optimizer-after-you-implement-bfgs">4) Run the optimizer
+(after you implement BFGS)</h3>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> scripts/run_opt.py <span class="at">--N</span> 120 <span class="at">--steps</span> 200</span></code></pre></div>
+<h2 id="what-you-need-to-implement">What you need to implement</h2>
+<ul>
+<li><code>src/elastic_rod/bfgs.py</code>: BFGS update + line search
+(Wolfe or backtracking).</li>
+<li>(Optional) better initialization and plotting in
+<code>scripts/run_opt.py</code>.</li>
+</ul>
+<h2 id="repo-layout">Repo layout</h2>
+<ul>
+<li><code>csrc/</code>: C++ energy + gradient, builds a shared
+library</li>
+<li><code>src/elastic_rod/</code>: Python wrapper + optimization
+code</li>
+<li><code>docs/background.tex</code>: short LaTeX background note
+(assignment handout)</li>
+<li><code>tests/</code>: finite-difference gradient checks</li>
+</ul>
+<h2 id="parameters-default">Parameters (default)</h2>
+<ul>
+<li><code>kb</code>: bending stiffness</li>
+<li><code>ks</code>: stretching stiffness</li>
+<li><code>l0</code>: rest segment length</li>
+<li><code>q</code>: charge magnitude per node</li>
+<li><code>kappa</code>: screening parameter (0 gives unscreened
+Coulomb)</li>
+</ul>
+<p>See <code>src/elastic_rod/model.py</code>.</p>
+<h2 id="license">License</h2>
+<p>MIT (for the starter code). Add your course policy as needed.</p>
+<h2 id="autograding">Autograding</h2>
+<p>See <code>docs/AUTOGRADING.md</code> and try:</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> scripts/autograde_local.py <span class="at">--mode</span> accuracy</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> scripts/autograde_local.py <span class="at">--mode</span> speed</span></code></pre></div>
+
+</body>
+</html>

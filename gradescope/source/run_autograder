@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Gradescope layout:
+# /autograder/source  -> this script and course files
+# /autograder/submission -> student submission (repo root)
+
+SUB="/autograder/submission"
+
+cd "$SUB"
+
+python -m venv .venv
+source .venv/bin/activate
+
+python -m pip install --upgrade pip >/dev/null
+pip install -r requirements.txt >/dev/null
+pip install -e . >/dev/null
+
+# Build shared library (required)
+bash csrc/build.sh >/dev/null
+
+# Run correctness tests
+pytest -q >/dev/null
+
+# Run autograde suite and write results.json
+python scripts/autograde_local.py --mode accuracy > /tmp/acc.json
+python scripts/autograde_local.py --mode speed > /tmp/spd.json
+
+python - <<'PY'
+import json, math, os, time
+from pathlib import Path
+
+acc = json.loads(Path("/tmp/acc.json").read_text())
+spd = json.loads(Path("/tmp/spd.json").read_text())
+
+def score_case(case, mode):
+    # Very simple scoring logic placeholder.
+    # In your real Gradescope autograder, replace thresholds using staff reference runs.
+    f0 = case["f0"]
+    ff = case["f_final"]
+    drop = (f0 - ff) / max(1.0, abs(f0))
+    gnorm = case["gnorm_final"]
+    nfev = case["n_feval"]
+    t = case["runtime_sec"]
+
+    s = 0.0
+    if mode == "accuracy":
+        # reward big drop and small gradient
+        s += 50.0 * max(0.0, min(1.0, drop / 0.25))
+        s += 50.0 * max(0.0, min(1.0, 1.0 / (1.0 + gnorm)))
+        # mild penalty for huge eval counts
+        if nfev > 800: s -= 10
+    else:
+        s += 60.0 * max(0.0, min(1.0, drop / 0.18))
+        s += 40.0 * max(0.0, min(1.0, 400.0 / max(400.0, nfev)))
+        if t > 8.0: s -= 15
+    return max(0.0, min(100.0, s))
+
+acc_scores = [score_case(c, "accuracy") for c in acc["results"]]
+spd_scores = [score_case(c, "speed") for c in spd["results"]]
+
+total = 0.5 * sum(acc_scores)/len(acc_scores) + 0.5 * sum(spd_scores)/len(spd_scores)
+
+results = {
+  "score": float(total),
+  "output": "Auto-report written. See files acc.json and spd.json in the submission artifacts.",
+  "tests": [
+    {"name": "Accuracy suite", "score": float(sum(acc_scores)/len(acc_scores)), "max_score": 100.0},
+    {"name": "Speed suite", "score": float(sum(spd_scores)/len(spd_scores)), "max_score": 100.0},
+  ]
+}
+
+Path("acc.json").write_text(json.dumps(acc, indent=2, sort_keys=True))
+Path("spd.json").write_text(json.dumps(spd, indent=2, sort_keys=True))
+
+Path("/autograder/results/results.json").write_text(json.dumps(results))
+print("Wrote /autograder/results/results.json")
+PY
