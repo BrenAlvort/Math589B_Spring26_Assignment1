@@ -10,11 +10,8 @@ static inline int imod(int i, int N) {
     return (r < 0) ? (r + N) : r;
 }
 
-// Robust closest points between segments P0P1 and Q0Q1 in R^3.
-// Returns (s,t) in [0,1]x[0,1] such that
-//   C1 = P0 + s*(P1-P0),  C2 = Q0 + t*(Q1-Q0)
-// are closest points.
-// Based on standard routine (Ericson, Real-Time Collision Detection).
+// Closest points between segments P0P1 and Q0Q1 in R^3.
+// Returns s,t in [0,1]x[0,1]. Robust standard routine.
 static inline void closest_params_segment_segment(
     const double P0[3], const double P1[3],
     const double Q0[3], const double Q1[3],
@@ -22,28 +19,27 @@ static inline void closest_params_segment_segment(
 ) {
     const double EPS = 1e-12;
 
-    double d1[3] = { P1[0]-P0[0], P1[1]-P0[1], P1[2]-P0[2] };
-    double d2[3] = { Q1[0]-Q0[0], Q1[1]-Q0[1], Q1[2]-Q0[2] };
-    double r[3]  = { P0[0]-Q0[0], P0[1]-Q0[1], P0[2]-Q0[2] };
-
     auto dot3 = [](const double a[3], const double b[3]) {
         return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
     };
 
-    double a = dot3(d1,d1);  // |d1|^2
-    double e = dot3(d2,d2);  // |d2|^2
+    double d1[3] = { P1[0]-P0[0], P1[1]-P0[1], P1[2]-P0[2] };
+    double d2[3] = { Q1[0]-Q0[0], Q1[1]-Q0[1], Q1[2]-Q0[2] };
+    double r[3]  = { P0[0]-Q0[0], P0[1]-Q0[1], P0[2]-Q0[2] };
+
+    double a = dot3(d1,d1);
+    double e = dot3(d2,d2);
     double f = dot3(d2,r);
 
-    // Handle degenerate segments
     if (a <= EPS && e <= EPS) { s = 0.0; t = 0.0; return; }
-    if (a <= EPS) { // P is a point
+    if (a <= EPS) {
         s = 0.0;
         t = (e > EPS) ? (f / e) : 0.0;
         t = std::clamp(t, 0.0, 1.0);
         return;
     }
     double c = dot3(d1,r);
-    if (e <= EPS) { // Q is a point
+    if (e <= EPS) {
         t = 0.0;
         s = -c / a;
         s = std::clamp(s, 0.0, 1.0);
@@ -57,7 +53,6 @@ static inline void closest_params_segment_segment(
     double tN, tD = denom;
 
     if (denom < EPS) {
-        // Almost parallel: choose s = 0 and clamp t from there
         sN = 0.0; sD = 1.0;
         tN = f;   tD = e;
     } else {
@@ -65,7 +60,6 @@ static inline void closest_params_segment_segment(
         tN = (a*f - b*c);
     }
 
-    // Clamp s to [0,1], update t accordingly
     if (sN < 0.0) {
         sN = 0.0;
         tN = f;
@@ -76,7 +70,6 @@ static inline void closest_params_segment_segment(
         tD = e;
     }
 
-    // Clamp t to [0,1], update s accordingly
     if (tN < 0.0) {
         tN = 0.0;
         sN = -c;
@@ -163,42 +156,35 @@ void rod_energy_grad(
         }
     }
 
-    // ---- Segment–segment WCA self-avoidance ----
-    // Segment i is (i,i+1). Exclude adjacent segments (share an endpoint),
-    // including wrap neighbors.
+    // ---- Segment–segment WCA self-avoidance
+    //
+    // CRITICAL: Exclusions must match assignment intent.
+    // We exclude segment pairs with circular index distance <= 2:
+    //   j == i, i±1, i±2 (mod N)
+    //
     if (eps != 0.0 && sigma > 0.0) {
         const double rc = std::pow(2.0, 1.0/6.0) * sigma;
         const double rc2 = rc * rc;
-        const double sig = sigma;
         const double EPSD = 1e-12;
 
+        auto seg_circ_dist = [&](int a, int b) {
+            int da = std::abs(a - b);
+            return std::min(da, N - da);
+        };
+
         for (int i = 0; i < N; ++i) {
-            int i0 = i;
-            int i1 = idx(i+1);
+            double P0[3] = { get(i,0),   get(i,1),   get(i,2) };
+            double P1[3] = { get(i+1,0), get(i+1,1), get(i+1,2) };
 
-            double P0[3] = { get(i0,0), get(i0,1), get(i0,2) };
-            double P1[3] = { get(i0+1,0), get(i0+1,1), get(i0+1,2) }; // periodic via get
+            for (int j = i + 1; j < N; ++j) {
+                if (seg_circ_dist(i, j) <= 2) continue;
 
-            for (int j = i+1; j < N; ++j) {
-                // Exclusions: skip if segments share a node:
-                // (i,i+1) adjacent to (i-1,i), (i,i+1), (i+1,i+2)
-                // In terms of segment index j: j == i, i-1, i+1 (mod N)
-                int jm = idx(j);
-                if (jm == idx(i) || jm == idx(i-1) || jm == idx(i+1)) continue;
-
-                // Also exclude wrap-adjacent pair: segment 0 and segment N-1
-                // This is already handled by the modular adjacency above, but keep safe.
-                // (If i=0, then j=N-1 is adjacent.)
-                if (idx(i)==0 && idx(j)==N-1) continue;
-                if (idx(j)==0 && idx(i)==N-1) continue;
-
-                double Q0[3] = { get(j,0), get(j,1), get(j,2) };
+                double Q0[3] = { get(j,0),   get(j,1),   get(j,2) };
                 double Q1[3] = { get(j+1,0), get(j+1,1), get(j+1,2) };
 
                 double u, v;
                 closest_params_segment_segment(P0, P1, Q0, Q1, u, v);
 
-                // Closest points
                 double Ci[3] = {
                     P0[0] + u*(P1[0]-P0[0]),
                     P0[1] + u*(P1[1]-P0[1]),
@@ -218,7 +204,7 @@ void rod_energy_grad(
                 double d = std::sqrt(std::max(d2, EPSD));
 
                 // WCA energy
-                double s = sig / d;
+                double s = sigma / d;
                 double s2 = s*s;
                 double s6 = s2*s2*s2;
                 double s12 = s6*s6;
@@ -228,26 +214,20 @@ void rod_energy_grad(
                 // dU/dd = (24 eps / d) * (-2 s12 + s6)
                 double dU_dd = (24.0 * eps / d) * (-2.0*s12 + s6);
 
-                // ∂U/∂Ci = dU/dd * ∂d/∂Ci = dU/dd * (rvec/d)
-                // force vector (gradient contribution on Ci)
-                double scale = dU_dd / d;
+                // grad wrt closest points
+                double scale = dU_dd / d; // multiply by rvec
                 double gCi[3] = { scale*rvec[0], scale*rvec[1], scale*rvec[2] };
-                // ∂U/∂Cj = -gCi
                 double gCj[3] = { -gCi[0], -gCi[1], -gCi[2] };
 
-                // Distribute to endpoints:
-                // Ci = (1-u) P0 + u P1
-                // Cj = (1-v) Q0 + v Q1
-                const double wP0 = (1.0 - u);
-                const double wP1 = u;
-                const double wQ0 = (1.0 - v);
-                const double wQ1 = v;
+                // distribute to endpoints
+                double wP0 = (1.0 - u), wP1 = u;
+                double wQ0 = (1.0 - v), wQ1 = v;
 
                 for (int dcomp = 0; dcomp < 3; ++dcomp) {
-                    addg(i0,     dcomp, wP0 * gCi[dcomp]);
-                    addg(i0+1,   dcomp, wP1 * gCi[dcomp]);
-                    addg(j,      dcomp, wQ0 * gCj[dcomp]);
-                    addg(j+1,    dcomp, wQ1 * gCj[dcomp]);
+                    addg(i,   dcomp, wP0 * gCi[dcomp]);
+                    addg(i+1, dcomp, wP1 * gCi[dcomp]);
+                    addg(j,   dcomp, wQ0 * gCj[dcomp]);
+                    addg(j+1, dcomp, wQ1 * gCj[dcomp]);
                 }
             }
         }
@@ -257,3 +237,4 @@ void rod_energy_grad(
 }
 
 } // extern "C"
+
