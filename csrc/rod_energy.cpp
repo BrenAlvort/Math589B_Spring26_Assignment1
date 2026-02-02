@@ -3,26 +3,143 @@
 
 extern "C" {
 
-// Bump when you change the exported function signatures.
 int rod_api_version() { return 2; }
 
-// Exported API (students may extend, but autograder only requires Python-level RodEnergy.value_and_grad).
-// x: length 3N (xyzxyz...)
-// grad_out: length 3N
-// Periodic indexing enforces a closed loop.
+static inline double dot3(const double a[3], const double b[3]) {
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+}
+
+static inline void sub3(double out[3], const double a[3], const double b[3]) {
+    out[0] = a[0]-b[0];
+    out[1] = a[1]-b[1];
+    out[2] = a[2]-b[2];
+}
+
+static inline double norm3(const double a[3]) {
+    return std::sqrt(dot3(a,a));
+}
+
+// Robust closest points parameters between segments P0P1 and Q0Q1.
+// Returns s,t in [0,1]x[0,1].
+static inline void closest_params_segment_segment(
+    const double P0[3], const double P1[3],
+    const double Q0[3], const double Q1[3],
+    double &s, double &t
+) {
+    const double EPS = 1e-12;
+
+    double d1[3] = { P1[0]-P0[0], P1[1]-P0[1], P1[2]-P0[2] };
+    double d2[3] = { Q1[0]-Q0[0], Q1[1]-Q0[1], Q1[2]-Q0[2] };
+    double r[3]  = { P0[0]-Q0[0], P0[1]-Q0[1], P0[2]-Q0[2] };
+
+    double a = dot3(d1,d1);
+    double e = dot3(d2,d2);
+    double f = dot3(d2,r);
+
+    if (a <= EPS && e <= EPS) { s = 0.0; t = 0.0; return; }
+    if (a <= EPS) {
+        s = 0.0;
+        t = (e > EPS) ? (f / e) : 0.0;
+        t = std::clamp(t, 0.0, 1.0);
+        return;
+    }
+
+    double c = dot3(d1,r);
+    if (e <= EPS) {
+        t = 0.0;
+        s = -c / a;
+        s = std::clamp(s, 0.0, 1.0);
+        return;
+    }
+
+    double b = dot3(d1,d2);
+    double denom = a*e - b*b;
+
+    double sN, sD = denom;
+    double tN, tD = denom;
+
+    if (denom < EPS) {
+        sN = 0.0; sD = 1.0;
+        tN = f;   tD = e;
+    } else {
+        sN = (b*f - c*e);
+        tN = (a*f - b*c);
+    }
+
+    if (sN < 0.0) {
+        sN = 0.0;
+        tN = f;
+        tD = e;
+    } else if (sN > sD) {
+        sN = sD;
+        tN = f + b;
+        tD = e;
+    }
+
+    if (tN < 0.0) {
+        tN = 0.0;
+        sN = -c;
+        sD = a;
+        sN = std::clamp(sN, 0.0, sD);
+    } else if (tN > tD) {
+        tN = tD;
+        sN = b - c;
+        sD = a;
+        sN = std::clamp(sN, 0.0, sD);
+    }
+
+    s = (std::abs(sD) > EPS) ? (sN / sD) : 0.0;
+    t = (std::abs(tD) > EPS) ? (tN / tD) : 0.0;
+
+    s = std::clamp(s, 0.0, 1.0);
+    t = std::clamp(t, 0.0, 1.0);
+}
+
+static inline void lerp3(double out[3], const double A[3], const double B[3], double u) {
+    out[0] = A[0] + u*(B[0]-A[0]);
+    out[1] = A[1] + u*(B[1]-A[1]);
+    out[2] = A[2] + u*(B[2]-A[2]);
+}
+
+static inline double wca_U(double d, double eps, double sigma) {
+    const double rc = std::pow(2.0, 1.0/6.0) * sigma;
+    if (d >= rc) return 0.0;
+    d = std::max(d, 1e-12);
+    double s = sigma / d;
+    double s2 = s*s;
+    double s6 = s2*s2*s2;
+    double s12 = s6*s6;
+    return 4.0*eps*(s12 - s6) + eps;
+}
+
+static inline double segment_segment_wca_energy(
+    const double Pi0[3], const double Pi1[3],
+    const double Pj0[3], const double Pj1[3],
+    double eps, double sigma
+) {
+    double u, v;
+    closest_params_segment_segment(Pi0, Pi1, Pj0, Pj1, u, v);
+    double Ci[3], Cj[3], r[3];
+    lerp3(Ci, Pi0, Pi1, u);
+    lerp3(Cj, Pj0, Pj1, v);
+    sub3(r, Ci, Cj);
+    double d = norm3(r);
+    return wca_U(d, eps, sigma);
+}
+
 void rod_energy_grad(
     int N,
     const double* x,
     double kb,
     double ks,
     double l0,
-    double kc,    // confinement strength
-    double eps,   // WCA epsilon
-    double sigma, // WCA sigma
+    double kc,
+    double eps,
+    double sigma,
     double* energy_out,
     double* grad_out
 ) {
-    const int M = 3 * N;
+    const int M = 3*N;
     for (int i = 0; i < M; ++i) grad_out[i] = 0.0;
     double E = 0.0;
 
@@ -30,37 +147,32 @@ void rod_energy_grad(
         int r = i % N;
         return (r < 0) ? (r + N) : r;
     };
-
     auto get = [&](int i, int d) -> double {
-        return x[3 * idx(i) + d];
+        return x[3*idx(i) + d];
     };
-
     auto addg = [&](int i, int d, double v) {
-        grad_out[3 * idx(i) + d] += v;
+        grad_out[3*idx(i) + d] += v;
     };
 
-    // ---- Bending: kb * ||x_{i+1} - 2 x_i + x_{i-1}||^2
+    // ---- Bending: kb * sum ||x_{i+1} - 2 x_i + x_{i-1}||^2
     for (int i = 0; i < N; ++i) {
         for (int d = 0; d < 3; ++d) {
             const double b = get(i+1,d) - 2.0*get(i,d) + get(i-1,d);
             E += kb * b * b;
-
             const double c = 2.0 * kb * b;
-            addg(i-1, d,  c);
+            addg(i-1, d, c);
             addg(i,   d, -2.0*c);
-            addg(i+1, d,  c);
+            addg(i+1, d, c);
         }
     }
 
-    // ---- Stretching: ks * (||x_{i+1}-x_i|| - l0)^2
+    // ---- Stretching: ks * sum (||x_{i+1}-x_i|| - l0)^2
     for (int i = 0; i < N; ++i) {
         double dx0 = get(i+1,0) - get(i,0);
         double dx1 = get(i+1,1) - get(i,1);
         double dx2 = get(i+1,2) - get(i,2);
-
         double r = std::sqrt(dx0*dx0 + dx1*dx1 + dx2*dx2);
         r = std::max(r, 1e-12);
-
         double diff = r - l0;
         E += ks * diff * diff;
 
@@ -78,174 +190,61 @@ void rod_energy_grad(
         for (int d = 0; d < 3; ++d) {
             double xi = get(i,d);
             E += kc * xi * xi;
-            addg(i, d, 2.0 * kc * xi);
+            addg(i,d, 2.0 * kc * xi);
         }
     }
 
-    // ---- TODO: Segment-segment WCA self-avoidance ----
-    //
-    // For each non-adjacent segment pair (i,i+1) and (j,j+1):
-    //  1) Compute closest points parameters u*, v* in [0,1]
-    //  2) Compute r = p_i(u*) - p_j(v*), d = ||r||
-    //  3) If d < 2^(1/6)*sigma:
-    //       U(d) = 4 eps [ (sigma/d)^12 - (sigma/d)^6 ] + eps
-    //       Accumulate E += U(d)
-    //       Accumulate gradient to endpoints x_i, x_{i+1}, x_j, x_{j+1}
-    //
-    // Exclusions: skip adjacent segments (including wrap neighbors).
-    //
-    // IMPORTANT: You must include the dependence of (u*, v*) on endpoints in your gradient.
+    // ---- Segment–segment WCA self-avoidance
+    // Central-difference gradient over the 4 endpoints (12 scalars).
+    if (eps != 0.0 && sigma > 0.0) {
+        auto seg_circ_dist = [&](int a, int b) {
+            int da = std::abs(a - b);
+            return std::min(da, N - da);
+        };
 
-    auto clamp01 = [](double t) {    // [0,1]
-        if (t < 0.0) return 0.0;
-        if (t > 1.0) return 1.0;
-        return t;
-    };
+        // Central difference step (much more accurate than forward diff for stiff WCA)
+        const double h = 1e-8;
 
-    auto dot3 = [](const double a[3], const double b[3]) { // dot product
-        return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
-    };
+        for (int i = 0; i < N; ++i) {
+            for (int j = i + 1; j < N; ++j) {
+                if (seg_circ_dist(i, j) <= 2) continue;
 
-    const double rcut = std::pow(2.0, 1.0/6.0) * sigma; // wca cutoff
+                double Pi0[3] = { get(i,0),   get(i,1),   get(i,2) };
+                double Pi1[3] = { get(i+1,0), get(i+1,1), get(i+1,2) };
+                double Pj0[3] = { get(j,0),   get(j,1),   get(j,2) };
+                double Pj1[3] = { get(j+1,0), get(j+1,1), get(j+1,2) };
 
-    // For each non-adjacent segment pair (i,i+1) and (j,j+1):
-    for (int i = 0; i < N; ++i) {
-        int ip1 = i + 1;
-        for (int j = i + 1; j < N; ++j) {
-            int jp1 = j + 1;
+                double U0 = segment_segment_wca_energy(Pi0, Pi1, Pj0, Pj1, eps, sigma);
+                if (U0 == 0.0) continue;
+                E += U0;
 
-            // Exclusions: skip adjacent segments (including wrap neighbors).
-            int di = (j - i + N) % N; // skipping neighbours
-            if (di == 0 || di == 1 || di == N-1) continue;
+                int ids[4] = { i, i+1, j, j+1 };
 
-            // endpoints of [i,i+1] and [j,j+1]
-            double a0[3] = { get(i,0),   get(i,1),   get(i,2) };
-            double a1[3] = { get(ip1,0), get(ip1,1), get(ip1,2) };
+                for (int a = 0; a < 4; ++a) {
+                    int node = ids[a];
+                    for (int d = 0; d < 3; ++d) {
+                        // +h endpoints
+                        double Ai0p[3] = { Pi0[0], Pi0[1], Pi0[2] };
+                        double Ai1p[3] = { Pi1[0], Pi1[1], Pi1[2] };
+                        double Aj0p[3] = { Pj0[0], Pj0[1], Pj0[2] };
+                        double Aj1p[3] = { Pj1[0], Pj1[1], Pj1[2] };
 
-            double b0[3] = { get(j,0),   get(j,1),   get(j,2) };
-            double b1[3] = { get(jp1,0), get(jp1,1), get(jp1,2) };
+                        // -h endpoints
+                        double Ai0m[3] = { Pi0[0], Pi0[1], Pi0[2] };
+                        double Ai1m[3] = { Pi1[0], Pi1[1], Pi1[2] };
+                        double Aj0m[3] = { Pj0[0], Pj0[1], Pj0[2] };
+                        double Aj1m[3] = { Pj1[0], Pj1[1], Pj1[2] };
 
-            double A[3]  = { a1[0]-a0[0], a1[1]-a0[1], a1[2]-a0[2] }; // direction vectors
-            double B[3]  = { b1[0]-b0[0], b1[1]-b0[1], b1[2]-b0[2] };
-            double r0[3] = { a0[0]-b0[0], a0[1]-b0[1], a0[2]-b0[2] };
+                        if (a == 0) { Ai0p[d] += h; Ai0m[d] -= h; }
+                        if (a == 1) { Ai1p[d] += h; Ai1m[d] -= h; }
+                        if (a == 2) { Aj0p[d] += h; Aj0m[d] -= h; }
+                        if (a == 3) { Aj1p[d] += h; Aj1m[d] -= h; }
 
-            double BB = dot3(A, A);  // building 2x2 system
-            double DD = dot3(B, B);
-            double EE = dot3(A, B);
+                        double Up = segment_segment_wca_energy(Ai0p, Ai1p, Aj0p, Aj1p, eps, sigma);
+                        double Um = segment_segment_wca_energy(Ai0m, Ai1m, Aj0m, Aj1m, eps, sigma);
 
-            double rhs0 = -dot3(A, r0);
-            double rhs1 =  dot3(B, r0);
-
-            double det = BB*DD - EE*EE;
-
-            double u = 0.0, v = 0.0; // solving for u,v
-            if (std::abs(det) > 1e-14) {
-                u = (DD*rhs0 + EE*rhs1) / det;
-                v = (EE*rhs0 + BB*rhs1) / det;
-            }
-
-            u = clamp01(u); // clamp to [0,1]
-            v = clamp01(v);
-
-            double p[3] = {  // closest points p(u)
-                (1.0-u)*a0[0] + u*a1[0],
-                (1.0-u)*a0[1] + u*a1[1],
-                (1.0-u)*a0[2] + u*a1[2]
-            };
-
-            double q[3] = {  // q(v)
-                (1.0-v)*b0[0] + v*b1[0],
-                (1.0-v)*b0[1] + v*b1[1],
-                (1.0-v)*b0[2] + v*b1[2]
-            };
-
-            double rvec[3] = { p[0]-q[0], p[1]-q[1], p[2]-q[2] }; // r = p-q
-            double d2 = dot3(rvec, rvec);
-            double d  = std::sqrt(std::max(d2, 1e-24));
-
-            if (d >= rcut) continue;
-
-            // WCA energy
-            double invd = 1.0 / d;
-            double sr   = sigma * invd;
-            double sr2  = sr * sr;
-            double sr6  = sr2 * sr2 * sr2;
-            double sr12 = sr6 * sr6;
-
-            double U = 4.0 * eps * (sr12 - sr6) + eps;
-            E += U;
-
-            double dU_dd = (24.0 * eps * invd) * (-2.0 * sr12 + sr6); // dU/dd
-            double nvec[3] = { rvec[0]*invd, rvec[1]*invd, rvec[2]*invd }; // n = r/d
-
-            // baseline gradient (treat u,v as constants for the moment)
-            for (int dim = 0; dim < 3; ++dim) {
-                double gcomp = dU_dd * nvec[dim];
-
-                addg(i,   dim, (1.0 - u) * gcomp);   // [i, i + 1] endpoints
-                addg(i+1, dim, u * gcomp);
-
-                addg(j,   dim, -(1.0 - v) * gcomp);  // [j, j + 1] endpoints but are negative
-                addg(j+1, dim, -v * gcomp);
-            }
-
-            bool u_free   = (u > 1e-12 && u < 1.0 - 1e-12);
-            bool v_free   = (v > 1e-12 && v < 1.0 - 1e-12);
-            bool can_diff = u_free && v_free && (std::abs(det) > 1e-14);
-
-            // inverse of [BB -EE; -EE DD] is (1/det)[DD EE; EE BB]
-            double inv00=0.0, inv01=0.0, inv10=0.0, inv11=0.0;
-            if (can_diff) {
-                inv00 = DD / det;
-                inv01 = EE / det;
-                inv10 = EE / det;
-                inv11 = BB / det;
-            }
-
-            if (can_diff) {
-                for (int endpoint = 0; endpoint < 4; ++endpoint) {  // loop over the 4 endpoints: 0=a0, 1=a1, 2=b0, 3=b1
-                    for (int dim = 0; dim < 3; ++dim) {
-
-                        // unit perturbation applied to one endpoint component
-                        double da0[3] = {0,0,0}, da1[3] = {0,0,0}, db0[3] = {0,0,0}, db1[3] = {0,0,0};
-                        if (endpoint == 0) da0[dim] = 1.0;
-                        if (endpoint == 1) da1[dim] = 1.0;
-                        if (endpoint == 2) db0[dim] = 1.0;
-                        if (endpoint == 3) db1[dim] = 1.0;
-
-                        double dA[3]  = { da1[0]-da0[0], da1[1]-da0[1], da1[2]-da0[2] }; // variations of A,B,r0
-                        double dB[3]  = { db1[0]-db0[0], db1[1]-db0[1], db1[2]-db0[2] };
-                        double dr0v[3]= { da0[0]-db0[0], da0[1]-db0[1], da0[2]-db0[2] };
-
-                        double drhs0 = -(dot3(dA, r0) + dot3(A, dr0v));   // d(rhs)
-                        double drhs1 =  (dot3(dB, r0) + dot3(B, dr0v));
-
-                        double dBB = 2.0 * dot3(A, dA);                   // d(matrix entries)
-                        double dDD = 2.0 * dot3(B, dB);
-                        double dEE = dot3(dA, B) + dot3(A, dB);
-
-                        // dM * [u;v] where M = [BB -EE; -EE DD]
-                        double dMt0 = dBB*u + (-dEE)*v;
-                        double dMt1 = (-dEE)*u + dDD*v;
-
-                        // solving: [du;dv] = invM * (drhs - dM*[u;v])
-                        double b0s = drhs0 - dMt0;
-                        double b1s = drhs1 - dMt1;
-
-                        double du = inv00*b0s + inv01*b1s;
-                        double dv = inv10*b0s + inv11*b1s;
-
-                        double dr_uv[3] = { du*A[0] - dv*B[0],
-                                            du*A[1] - dv*B[1],
-                                            du*A[2] - dv*B[2] };
-
-                        double dd_uv = nvec[0]*dr_uv[0] + nvec[1]*dr_uv[1] + nvec[2]*dr_uv[2];
-                        double dU_uv = dU_dd * dd_uv;
-
-                        if (endpoint == 0) addg(i,   dim, dU_uv); // so it adds this correction into the right grad entry
-                        if (endpoint == 1) addg(i+1, dim, dU_uv);
-                        if (endpoint == 2) addg(j,   dim, dU_uv);
-                        if (endpoint == 3) addg(j+1, dim, dU_uv);
+                        double dU = (Up - Um) / (2.0*h);
+                        addg(node, d, dU);
                     }
                 }
             }
