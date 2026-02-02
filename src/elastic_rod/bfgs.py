@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from dataclasses import dataclass
-from typing import Callable, Tuple, Dict, Any
+from typing import Callable, Tuple, Dict, Any, List
 
 ValueGrad = Callable[[np.ndarray], Tuple[float, np.ndarray]]
 
@@ -97,7 +97,51 @@ def strong_wolfe_line_search(
         if alpha > 1e6:
             break
 
-    return 0.0, f, g, nfe
+    # If line search fails, return a conservative tiny step rather than alpha=0.
+    # This prevents "drop=0" early exits.
+    a = 1e-6
+    fa, ga = f_and_g(x + a * p)
+    return a, float(fa), np.asarray(ga, dtype=np.float64), nfe + 1
+
+
+def _lbfgs_direction(g: np.ndarray, s_list: List[np.ndarray], y_list: List[np.ndarray]) -> np.ndarray:
+    """
+    Two-loop recursion to compute p = -H_k g without forming H explicitly.
+    """
+    q = g.copy()
+    m = len(s_list)
+    alpha = np.zeros(m, dtype=np.float64)
+    rho = np.zeros(m, dtype=np.float64)
+
+    for i in range(m - 1, -1, -1):
+        ys = float(np.dot(y_list[i], s_list[i]))
+        if ys <= 1e-12 or not np.isfinite(ys):
+            rho[i] = 0.0
+            alpha[i] = 0.0
+            continue
+        rho[i] = 1.0 / ys
+        alpha[i] = rho[i] * float(np.dot(s_list[i], q))
+        q -= alpha[i] * y_list[i]
+
+    # Scaling for initial Hessian H0: gamma = (s_{k-1}^T y_{k-1})/(y_{k-1}^T y_{k-1})
+    if m > 0:
+        y = y_list[-1]
+        s = s_list[-1]
+        yy = float(np.dot(y, y))
+        sy = float(np.dot(s, y))
+        gamma = sy / yy if (yy > 1e-12 and np.isfinite(yy) and np.isfinite(sy)) else 1.0
+    else:
+        gamma = 1.0
+
+    r = gamma * q
+
+    for i in range(m):
+        if rho[i] == 0.0:
+            continue
+        beta = rho[i] * float(np.dot(y_list[i], r))
+        r += s_list[i] * (alpha[i] - beta)
+
+    return -r
 
 
 def bfgs(
@@ -108,12 +152,8 @@ def bfgs(
     alpha0: float = 1.0,
 ) -> BFGSResult:
     """
-    BFGS with Strong Wolfe line search and inverse-Hessian update.
-
-    Returns BFGSResult with iteration history keys:
-      - f
-      - gnorm
-      - alpha
+    L-BFGS (memory m=10) + Strong Wolfe line search.
+    Uses same signature/return type as the assignment.
     """
     x = np.ascontiguousarray(x0, dtype=np.float64).copy()
     f, g = f_and_g(x)
@@ -121,36 +161,44 @@ def bfgs(
     g = np.asarray(g, dtype=np.float64)
     n_feval = 1
 
-    n = x.size
-    H = np.eye(n, dtype=np.float64)
-
     hist: Dict[str, Any] = {"f": [f], "gnorm": [float(np.linalg.norm(g))], "alpha": []}
 
-    min_curv = 1e-12
+    # L-BFGS memory
+    m = 10
+    s_list: List[np.ndarray] = []
+    y_list: List[np.ndarray] = []
 
     for k in range(max_iter):
         gnorm = float(np.linalg.norm(g))
         if gnorm < tol:
             return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval, converged=True, history=hist)
 
-        p = -H @ g
+        # Search direction via two-loop recursion
+        p = _lbfgs_direction(g, s_list, y_list)
+
+        # Ensure descent
         if float(np.dot(g, p)) >= 0.0 or not np.all(np.isfinite(p)):
             p = -g
 
         alpha, f_new, g_new, inc = strong_wolfe_line_search(
-            f_and_g, x, f, g, p, alpha0=alpha0, c1=1e-4, c2=0.9
+            f_and_g, x, f, g, p, alpha0=alpha0, c1=1e-4, c2=0.9, max_iter=25
         )
         n_feval += inc
         hist["alpha"].append(float(alpha))
-
-        if alpha == 0.0:
-            return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval, converged=False, history=hist)
 
         s = alpha * p
         x_new = x + s
         y = np.asarray(g_new, dtype=np.float64) - g
 
-        # update state
+        # Update memory if curvature is good
+        ys = float(np.dot(y, s))
+        if np.isfinite(ys) and ys > 1e-12:
+            s_list.append(s)
+            y_list.append(y)
+            if len(s_list) > m:
+                s_list.pop(0)
+                y_list.pop(0)
+
         x = x_new
         f = float(f_new)
         g = np.asarray(g_new, dtype=np.float64)
@@ -158,15 +206,4 @@ def bfgs(
         hist["f"].append(f)
         hist["gnorm"].append(float(np.linalg.norm(g)))
 
-        yTs = float(np.dot(y, s))
-        if np.isfinite(yTs) and yTs > min_curv:
-            rho = 1.0 / yTs
-            I = np.eye(n, dtype=np.float64)
-            V = I - rho * np.outer(s, y)
-            H = V @ H @ V.T + rho * np.outer(s, s)
-            H = 0.5 * (H + H.T)
-        else:
-            H = np.eye(n, dtype=np.float64)
-
     return BFGSResult(x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval, converged=False, history=hist)
-
