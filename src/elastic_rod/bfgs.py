@@ -64,7 +64,7 @@ def strong_wolfe_line_search(
             else:
                 if abs(gTpj) <= c2 * abs(gTp0):
                     return aj, fj, gj
-                if gTpj * (ahi - alo) >= 0:
+                if gTpj * (ahi - alo) >= 0.0:
                     ahi = alo
                 alo, flo = aj, fj
 
@@ -108,10 +108,12 @@ def bfgs(
     alpha0: float = 1.0,
 ) -> BFGSResult:
     """
-    Algorithm 6.3-style BFGS:
-      p_k = -H_k g_k
-      alpha_k from Strong Wolfe
-      inverse-Hessian update with curvature check
+    BFGS with Strong Wolfe line search and inverse-Hessian update.
+
+    Returns BFGSResult with iteration history keys:
+      - f
+      - gnorm
+      - alpha
     """
     x = np.ascontiguousarray(x0, dtype=np.float64).copy()
     f, g = f_and_g(x)
@@ -123,6 +125,7 @@ def bfgs(
     H = np.eye(n, dtype=np.float64)
 
     hist: Dict[str, Any] = {"f": [f], "gnorm": [float(np.linalg.norm(g))], "alpha": []}
+
     min_curv = 1e-12
 
     for k in range(max_iter):
@@ -145,8 +148,9 @@ def bfgs(
 
         s = alpha * p
         x_new = x + s
-        y = g_new - g
+        y = np.asarray(g_new, dtype=np.float64) - g
 
+        # update state
         x = x_new
         f = float(f_new)
         g = np.asarray(g_new, dtype=np.float64)
@@ -165,3 +169,4 @@ def bfgs(
             H = np.eye(n, dtype=np.float64)
 
     return BFGSResult(x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval, converged=False, history=hist)
+
