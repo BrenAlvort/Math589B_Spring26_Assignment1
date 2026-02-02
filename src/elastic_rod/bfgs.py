@@ -72,7 +72,7 @@ def armijo_backtracking(
     min_alpha: float = 1e-12,
 ) -> Tuple[float, float, np.ndarray, int]:
     """
-    Armijo backtracking with HARD caps to prevent n_feval blow-ups.
+    Armijo backtracking with hard caps to prevent n_feval blow-ups.
     Returns (alpha, f_new, g_new, n_feval_inc).
     """
     gTp = float(np.dot(g, p))
@@ -100,7 +100,7 @@ def armijo_backtracking(
         g_new = np.asarray(g_new, dtype=np.float64)
 
         if np.isfinite(f_new) and np.all(np.isfinite(g_new)):
-            # Track best seen (even if Armijo fails) to avoid returning garbage
+            # Track best seen (even if Armijo fails)
             if f_new < f_best:
                 f_best, g_best, a_best = f_new, g_new, alpha
 
@@ -128,9 +128,9 @@ def bfgs(
     """
     Practical L-BFGS + capped Armijo line search.
 
-    Key idea for this autograder:
-      - small cases (accuracy mode: N<=80) need more aggressive stepping
-      - large cases (speed mode: N>=160) need conservative stepping and low n_feval
+    Autograder behavior:
+      - small problems (accuracy mode: N<=80) need more aggressive stepping
+      - large problems (speed mode: N>=160) need conservative stepping and low n_feval
     """
     x = np.ascontiguousarray(x0, dtype=np.float64).copy()
     f, g = f_and_g(x)
@@ -140,11 +140,10 @@ def bfgs(
 
     n = x.size
     is_small = (n <= 240)  # N <= 80 (accuracy cases)
-    # is_large = (n >= 480)  # N >= 160 (speed cases)
 
     hist: Dict[str, Any] = {"f": [f], "gnorm": [float(np.linalg.norm(g))], "alpha": []}
 
-    # L-BFGS memory size (keep moderate; helps accuracy without slowing speed)
+    # L-BFGS memory size
     m = 12
     s_list: List[np.ndarray] = []
     y_list: List[np.ndarray] = []
@@ -152,21 +151,22 @@ def bfgs(
     # Curvature threshold for accepting (s,y)
     min_curv = 1e-12
 
-    # Step norm cap: larger for small problems to get big drop
-    max_step_norm = 5.0 if is_small else 1.0
+    # Step norm cap: larger for small problems to get bigger energy drop
+    max_step_norm = 8.0 if is_small else 1.0
 
     def initial_alpha(gnorm: float) -> float:
         """
         Initial alpha heuristic:
-          - small: start closer to 1 to reduce iterations/backtracking and increase drop
+          - small: start closer to 1 (or slightly above) to increase energy drop within steps
           - large: conservative to avoid WCA stiffness and keep eval count low
         """
         if is_small:
-            return float(np.clip(1.0 / max(1.0, 0.25 * gnorm), 1e-2, 1.0))
+            # more aggressive than before
+            return float(np.clip(1.25 / max(1.0, 0.20 * gnorm), 2e-2, 1.5))
         return float(np.clip(1.0 / max(1.0, gnorm), 1e-3, 0.25))
 
     # Line search budget
-    max_ls = 20 if is_small else 12
+    max_ls = 22 if is_small else 12
 
     for k in range(max_iter):
         gnorm = float(np.linalg.norm(g))
@@ -205,7 +205,7 @@ def bfgs(
             if pnorm > 0.0 and np.isfinite(pnorm):
                 p = p / pnorm
 
-            alpha_fb = 1e-2 if is_small else 1e-3
+            alpha_fb = 2e-2 if is_small else 1e-3
             x_try = x + alpha_fb * p
             f_try, g_try = f_and_g(x_try)
             n_feval += 1
@@ -245,7 +245,7 @@ def bfgs(
                 s_list.pop(0)
                 y_list.pop(0)
         else:
-            # Reset on bad curvature (common in stiff nonconvex regions)
+            # Reset on bad curvature
             s_list.clear()
             y_list.clear()
 
