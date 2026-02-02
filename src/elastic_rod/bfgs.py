@@ -1,9 +1,11 @@
 from __future__ import annotations
+
 import numpy as np
 from dataclasses import dataclass
 from typing import Callable, Tuple, Dict, Any
 
 ValueGrad = Callable[[np.ndarray], Tuple[float, np.ndarray]]
+
 
 @dataclass
 class BFGSResult:
@@ -15,7 +17,8 @@ class BFGSResult:
     converged: bool
     history: Dict[str, Any]
 
-def backtracking_line_search(
+
+def strong_wolfe_line_search(
     f_and_g: ValueGrad,
     x: np.ndarray,
     f: float,
@@ -23,40 +26,78 @@ def backtracking_line_search(
     p: np.ndarray,
     alpha0: float = 1.0,
     c1: float = 1e-4,
-    tau: float = 0.5,
-    max_steps: int = 30,
+    c2: float = 0.9,
+    max_iter: int = 25,
 ) -> Tuple[float, float, np.ndarray, int]:
     """
-    Simple Armijo backtracking line search.
-    Returns (alpha, f_new, g_new, n_feval_increment).
+    Strong Wolfe line search:
+      f(x+αp) <= f(x) + c1 α g^T p
+      |∇f(x+αp)^T p| <= c2 |g^T p|
+    Returns (alpha, f_new, g_new, n_feval_inc).
     """
-    # TODO (students): implement Armijo condition and backtracking.
-    # Armijo: f(x + a p) <= f(x) + c1 a g^T p
-    # We assume p is a descent direction (usually p = -H @ g).
-    # Armijo condition: f(x + a p) <= f(x) + c1 * a * g^T p
-
-    alpha = alpha0
-    gTp = float(g @ p)
-
-    n_feval_inc = 0
-
-    # fallback: if p is not descent, use steepest descent
-    if gTp >= 0.0:
+    gTp0 = float(np.dot(g, p))
+    if not np.isfinite(gTp0) or gTp0 >= 0.0:
         p = -g
-        gTp = float(g @ p)
+        gTp0 = float(np.dot(g, p))
+    if gTp0 == 0.0 or not np.isfinite(gTp0):
+        return 0.0, f, g, 0
 
-    for _ in range(max_steps):
-        x_new = x + alpha * p
-        f_new, g_new = f_and_g(x_new)
-        n_feval_inc += 1
+    nfe = 0
+    alpha_prev = 0.0
+    f_prev = f
 
-        if f_new <= f + c1 * alpha * gTp:
-            return alpha, f_new, g_new, n_feval_inc
+    def phi(a: float):
+        nonlocal nfe
+        xa = x + a * p
+        fa, ga = f_and_g(xa)
+        nfe += 1
+        return float(fa), np.asarray(ga, dtype=np.float64)
 
-        alpha *= tau
+    def zoom(alo: float, ahi: float, flo: float):
+        for _ in range(max_iter):
+            aj = 0.5 * (alo + ahi)
+            fj, gj = phi(aj)
+            gTpj = float(np.dot(gj, p))
 
-    # returning last try if loop is exited
-    return alpha, f_new, g_new, n_feval_inc
+            if (fj > f + c1 * aj * gTp0) or (fj >= flo):
+                ahi = aj
+            else:
+                if abs(gTpj) <= c2 * abs(gTp0):
+                    return aj, fj, gj
+                if gTpj * (ahi - alo) >= 0:
+                    ahi = alo
+                alo, flo = aj, fj
+
+            if abs(ahi - alo) < 1e-16:
+                break
+
+        fj, gj = phi(alo)
+        return alo, fj, gj
+
+    alpha = float(alpha0)
+
+    for it in range(max_iter):
+        f_new, g_new = phi(alpha)
+
+        if (f_new > f + c1 * alpha * gTp0) or (it > 0 and f_new >= f_prev):
+            a, fn, gn = zoom(alpha_prev, alpha, f_prev)
+            return a, fn, gn, nfe
+
+        gTp = float(np.dot(g_new, p))
+        if abs(gTp) <= c2 * abs(gTp0):
+            return alpha, f_new, g_new, nfe
+
+        if gTp >= 0.0:
+            a, fn, gn = zoom(alpha, alpha_prev, f_new)
+            return a, fn, gn, nfe
+
+        alpha_prev = alpha
+        f_prev = f_new
+        alpha *= 2.0
+        if alpha > 1e6:
+            break
+
+    return 0.0, f, g, nfe
 
 
 def bfgs(
@@ -67,85 +108,60 @@ def bfgs(
     alpha0: float = 1.0,
 ) -> BFGSResult:
     """
-    Minimize f(x) with BFGS.
-
-    You should:
-    - maintain an approximation H_k to the inverse Hessian
-    - compute p_k = -H_k g_k
-    - perform a line search to get step alpha_k
-    - update x, f, g
-    - update H via the BFGS formula (with curvature checks)
-
-    Return BFGSResult with a small iteration history useful for plotting.
+    Algorithm 6.3-style BFGS:
+      p_k = -H_k g_k
+      alpha_k from Strong Wolfe
+      inverse-Hessian update with curvature check
     """
-
     x = np.ascontiguousarray(x0, dtype=np.float64).copy()
     f, g = f_and_g(x)
+    f = float(f)
+    g = np.asarray(g, dtype=np.float64)
     n_feval = 1
 
     n = x.size
-    H = np.eye(n)  # inverse Hessian approximation
+    H = np.eye(n, dtype=np.float64)
 
-    hist = {"f": [f], "gnorm": [np.linalg.norm(g)], "alpha": []}
+    hist: Dict[str, Any] = {"f": [f], "gnorm": [float(np.linalg.norm(g))], "alpha": []}
+    min_curv = 1e-12
 
     for k in range(max_iter):
-        gnorm = np.linalg.norm(g)
+        gnorm = float(np.linalg.norm(g))
         if gnorm < tol:
-            return BFGSResult(
-                x=x, f=f, g=g, n_iter=k, n_feval=n_feval,
-                converged=True, history=hist
-            )
+            return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval, converged=True, history=hist)
 
-        # Search direction
         p = -H @ g
+        if float(np.dot(g, p)) >= 0.0 or not np.all(np.isfinite(p)):
+            p = -g
 
-        # Line search
-        # TODO (students): call your line search to get alpha, f_new, g_new.
-        # alpha, f_new, g_new, inc = backtracking_line_search(...)
-        alpha, f_new, g_new, inc = backtracking_line_search(
-            f_and_g=f_and_g,
-            x=x,
-            f=f,
-            g=g,
-            p=p,
-            alpha0=alpha0,
+        alpha, f_new, g_new, inc = strong_wolfe_line_search(
+            f_and_g, x, f, g, p, alpha0=alpha0, c1=1e-4, c2=0.9
         )
         n_feval += inc
-        hist["alpha"].append(alpha)
+        hist["alpha"].append(float(alpha))
 
-        # Update step
-        # s = x_new - x
-        # y = g_new - g
-        x_new = x + alpha * p
-        s = x_new - x
+        if alpha == 0.0:
+            return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval, converged=False, history=hist)
+
+        s = alpha * p
+        x_new = x + s
         y = g_new - g
 
-        # TODO (students): BFGS update for H with curvature check y^T s > 0.
-        # Hint: Use the standard BFGS inverse-Hessian update.
-
-        ys = float(y @ s)
-
-        # Expanded-form inverse-Hessian BFGS update:
-        # H_{k+1} = H_k - (H_k y y^T H_k)/(y^T H_k y) + (s s^T)/(y^T s)
-        Hy = H @ y
-        yHy = float(y @ Hy)
-
-        if ys > 1e-12 and yHy > 1e-12:
-            H = H - np.outer(Hy, Hy) / yHy + np.outer(s, s) / ys
-            # keep symmetry (numerical cleanup)
-            H = 0.5 * (H + H.T)
-        else:
-            # Reset H if needed
-            H = np.eye(n)
-
         x = x_new
-        f = f_new
-        g = g_new
+        f = float(f_new)
+        g = np.asarray(g_new, dtype=np.float64)
 
         hist["f"].append(f)
-        hist["gnorm"].append(np.linalg.norm(g))
+        hist["gnorm"].append(float(np.linalg.norm(g)))
 
-    return BFGSResult(
-        x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval,
-        converged=False, history=hist
-    )
+        yTs = float(np.dot(y, s))
+        if np.isfinite(yTs) and yTs > min_curv:
+            rho = 1.0 / yTs
+            I = np.eye(n, dtype=np.float64)
+            V = I - rho * np.outer(s, y)
+            H = V @ H @ V.T + rho * np.outer(s, s)
+            H = 0.5 * (H + H.T)
+        else:
+            H = np.eye(n, dtype=np.float64)
+
+    return BFGSResult(x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval, converged=False, history=hist)
