@@ -162,7 +162,7 @@ def bfgs(
           - large: conservative to avoid WCA stiffness and keep eval count low
         """
         if is_small:
-    return float(np.clip(1.25 / max(1.0, 0.20 * gnorm), 2e-2, 1.5))
+            return float(np.clip(1.0 / max(1.0, 0.25 * gnorm), 1e-2, 1.0))
         return float(np.clip(1.0 / max(1.0, gnorm), 1e-3, 0.25))
 
     # Line search budget
